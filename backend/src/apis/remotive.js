@@ -2,29 +2,46 @@ import fetch from 'node-fetch';
 
 /**
  * Fetch remote jobs from Remotive API (no auth required).
+ * Category-based fetch + local title keyword filtering.
  * Docs: https://remotive.com/api
  */
 export async function fetchRemotiveJobs(targetTitles = []) {
-  const categories = ['software-dev', 'devops-sysadmin', 'product', 'data'];
   const results = [];
+  const seen = new Set();
+
+  // Fetch across multiple tech categories for breadth
+  const categories = ['software-dev', 'devops-sysadmin', 'data', 'product', 'backend', 'frontend'];
 
   for (const category of categories) {
     try {
       const url = `https://remotive.com/api/remote-jobs?category=${category}&limit=20`;
-      const res = await fetch(url);
+      const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
       if (!res.ok) {
         console.warn(`[remotive] HTTP ${res.status} for category "${category}"`);
         continue;
       }
 
       const data = await res.json();
-      const jobs = (data.jobs || [])
-        .filter(j => {
-          if (targetTitles.length === 0) return true;
-          const titleLower = j.title?.toLowerCase() || '';
-          return targetTitles.some(t => titleLower.includes(t.toLowerCase()));
-        })
-        .map(j => ({
+      let jobs = (data.jobs || []).filter(j => j.url && !seen.has(j.url));
+
+      // Apply title filter if we have target titles (word-level)
+      if (targetTitles.length > 0) {
+        jobs = jobs.filter(j => {
+          const titleLower = (j.title || '').toLowerCase();
+          const descLower = (j.description || '').toLowerCase().substring(0, 500);
+          return targetTitles.some(target => {
+            const words = target.toLowerCase().split(/\s+/).filter(w => w.length > 3);
+            // Match if any key word from the target title appears in the job title
+            const titleHit = words.some(w => titleLower.includes(w));
+            // Or if skills from the description match (lenient fallback for small boards)
+            return titleHit;
+          });
+        });
+      }
+
+      const mapped = jobs.map(j => {
+        seen.add(j.url);
+        return {
           title: j.title,
           company: j.company_name || 'Unknown',
           location: j.candidate_required_location || 'Remote',
@@ -34,10 +51,13 @@ export async function fetchRemotiveJobs(targetTitles = []) {
           source: 'remotive',
           salary_min: null,
           salary_max: null,
-        }));
+        };
+      });
 
-      results.push(...jobs);
-      console.log(`[remotive] "${category}" → ${jobs.length} relevant jobs`);
+      if (mapped.length > 0) {
+        results.push(...mapped);
+        console.log(`[remotive] "${category}" → ${mapped.length} relevant jobs`);
+      }
     } catch (err) {
       console.error(`[remotive] Error for category "${category}":`, err.message);
     }
